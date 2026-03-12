@@ -12,8 +12,8 @@ other hosted ``.py`` file.
 import logging
 import os
 import tempfile
-import urllib.request
 
+import httpx
 from strands.tools.loader import load_tools_from_file_path, load_tools_from_module_path
 from strands.types.tools import AgentTool
 
@@ -28,12 +28,16 @@ def _is_url(path: str) -> bool:
 def _download_to_tempfile(url: str) -> str:
     """Download *url* to a temporary ``.py`` file and return its path.
 
-    The caller is responsible for the lifetime of the file (it lives in the
-    system temp directory and will be cleaned up on reboot at the latest).
+    Uses ``httpx`` which bundles its own CA certificates (via ``certifi``),
+    avoiding the macOS ``SSL: CERTIFICATE_VERIFY_FAILED`` issue that affects
+    ``urllib.request`` on Python.org installs.
+
+    The file is written to the system temp directory and will be cleaned up
+    on reboot at the latest.
 
     Raises:
-        urllib.error.URLError: On network errors.
-        ValueError: If the response doesn't look like a Python file.
+        httpx.HTTPStatusError: If the server returns a 4xx/5xx response.
+        httpx.ConnectError: On network/DNS errors.
     """
     # Derive a sensible module name from the URL's basename
     basename = os.path.basename(url.split("?")[0].split("#")[0])
@@ -44,7 +48,13 @@ def _download_to_tempfile(url: str) -> str:
     dest = os.path.join(tmp_dir, f"strands_mcp_{basename}")
 
     logger.info("Downloading tool from %s -> %s", url, dest)
-    urllib.request.urlretrieve(url, dest)  # noqa: S310
+
+    response = httpx.get(url, follow_redirects=True, timeout=30)
+    response.raise_for_status()
+
+    with open(dest, "wb") as f:
+        f.write(response.content)
+
     return dest
 
 
@@ -96,7 +106,7 @@ def load_tools_from_paths(paths: list[str]) -> list[AgentTool]:
     Raises:
         FileNotFoundError: If a local file does not exist.
         ImportError: If a module cannot be loaded.
-        urllib.error.URLError: If a URL cannot be fetched.
+        httpx.HTTPStatusError: If a URL returns an error response.
     """
     tools: list[AgentTool] = []
     for entry in paths:
