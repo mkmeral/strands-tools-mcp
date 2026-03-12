@@ -65,20 +65,23 @@ def load_tools_from_names(names: list[str]) -> list[AgentTool]:
     ``load_tools_from_module_path``, which discovers both ``@tool``-decorated
     functions and ``TOOL_SPEC`` module-based tools.
 
+    Tools that fail to load (e.g. missing dependencies) are skipped with a
+    warning rather than crashing the server.
+
     Args:
         names: Tool module names (e.g. ``["current_time", "file_read"]``).
 
     Returns:
-        A list of :class:`AgentTool` instances.
-
-    Raises:
-        AttributeError: If a module is not a valid tool module.
-        ImportError: If a module cannot be found.
+        A list of successfully loaded :class:`AgentTool` instances.
     """
     tools: list[AgentTool] = []
     for name in names:
         module_path = f"strands_tools.{name}"
-        loaded = load_tools_from_module_path(module_path)
+        try:
+            loaded = load_tools_from_module_path(module_path)
+        except Exception:
+            logger.exception("Failed to load tool '%s' — skipping. Is a dependency missing?", module_path)
+            continue
         for t in loaded:
             logger.info("Loaded tool '%s' from %s (%s)", t.tool_name, module_path, type(t).__name__)
         tools.extend(loaded)
@@ -94,6 +97,9 @@ def load_tools_from_paths(paths: list[str]) -> list[AgentTool]:
     * An ``http://`` or ``https://`` URL — downloaded to a temp file first,
       then loaded.  This lets you point at raw GitHub links, gists, etc.
 
+    Tools that fail to load (e.g. missing dependencies in the file) are
+    skipped with a warning rather than crashing the server.
+
     Uses the SDK's ``load_tools_from_file_path`` which handles both
     ``@tool``-decorated and ``TOOL_SPEC`` module-based tools.
 
@@ -101,21 +107,21 @@ def load_tools_from_paths(paths: list[str]) -> list[AgentTool]:
         paths: File paths or URLs to ``.py`` tool files.
 
     Returns:
-        A list of :class:`AgentTool` instances.
-
-    Raises:
-        FileNotFoundError: If a local file does not exist.
-        ImportError: If a module cannot be loaded.
-        httpx.HTTPStatusError: If a URL returns an error response.
+        A list of successfully loaded :class:`AgentTool` instances.
     """
     tools: list[AgentTool] = []
     for entry in paths:
-        if _is_url(entry):
-            filepath = _download_to_tempfile(entry)
-        else:
-            filepath = entry
+        try:
+            if _is_url(entry):
+                filepath = _download_to_tempfile(entry)
+            else:
+                filepath = entry
 
-        loaded = load_tools_from_file_path(filepath)
+            loaded = load_tools_from_file_path(filepath)
+        except Exception:
+            logger.exception("Failed to load tool from '%s' — skipping. Is a dependency missing?", entry)
+            continue
+
         for t in loaded:
             logger.info("Loaded tool '%s' from %s (%s)", t.tool_name, entry, type(t).__name__)
         tools.extend(loaded)

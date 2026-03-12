@@ -101,6 +101,12 @@ def create_server() -> tuple[Server, list[AgentTool]]:
         paths = [p.strip() for p in tool_paths_env.split(",") if p.strip()]
         tools.extend(load_tools_from_paths(paths))
 
+    if not tools:
+        logger.error(
+            "No tools were loaded successfully. Check the logs above for errors (missing dependencies, bad URLs, etc.)."
+        )
+        sys.exit(1)
+
     # Build a name → tool lookup for call dispatching
     tool_map: dict[str, AgentTool] = {t.tool_name: t for t in tools}
 

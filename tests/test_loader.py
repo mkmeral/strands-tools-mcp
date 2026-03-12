@@ -6,8 +6,6 @@ import tempfile
 import textwrap
 import threading
 
-import pytest
-
 from strands_tools_mcp.loader import _download_to_tempfile, _is_url, load_tools_from_names, load_tools_from_paths
 
 # ---------------------------------------------------------------------------
@@ -58,10 +56,10 @@ class TestLoadToolsFromNames:
         assert "current_time" in names
         assert "file_read" in names
 
-    def test_raises_on_missing_module(self) -> None:
-        """An error is raised for a non-existent module."""
-        with pytest.raises((ImportError, AttributeError)):
-            load_tools_from_names(["nonexistent_tool_xyz_999"])
+    def test_skips_missing_module(self) -> None:
+        """A non-existent module is skipped with a warning, not a crash."""
+        tools = load_tools_from_names(["nonexistent_tool_xyz_999"])
+        assert tools == []
 
     def test_empty_list_returns_empty(self) -> None:
         """An empty names list returns no tools."""
@@ -99,10 +97,10 @@ class TestLoadToolsFromPaths:
         finally:
             os.unlink(tmp_path)
 
-    def test_raises_on_missing_file(self) -> None:
-        """An error is raised for a non-existent path."""
-        with pytest.raises((FileNotFoundError, ImportError)):
-            load_tools_from_paths(["/tmp/does_not_exist_abc123.py"])
+    def test_skips_missing_file(self) -> None:
+        """A non-existent path is skipped with a warning, not a crash."""
+        tools = load_tools_from_paths(["/tmp/does_not_exist_abc123.py"])
+        assert tools == []
 
     def test_empty_list_returns_empty(self) -> None:
         """An empty paths list returns no tools."""
@@ -150,6 +148,51 @@ class TestLoadToolsFromPaths:
             assert names == {"tool_a", "tool_b"}
         finally:
             os.unlink(tmp_path)
+
+    def test_skips_file_with_missing_dep(self) -> None:
+        """A file that imports a missing package is skipped gracefully."""
+        source = textwrap.dedent("""\
+            from nonexistent_package_xyz import something  # noqa: F401
+
+            from strands import tool
+
+            @tool
+            def broken_tool(x: str) -> str:
+                \"\"\"Broken.
+
+                Args:
+                    x: Input
+
+                Returns:
+                    Output
+                \"\"\"
+                return x
+        """)
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, dir=tempfile.gettempdir()) as f:
+            f.write(source)
+            f.flush()
+            tmp_path = f.name
+
+        try:
+            tools = load_tools_from_paths([tmp_path])
+            assert tools == []
+        finally:
+            os.unlink(tmp_path)
+
+    def test_partial_success(self) -> None:
+        """Good tools still load even when a bad one is mixed in."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, dir=tempfile.gettempdir()) as f:
+            f.write(SAMPLE_DECORATED_TOOL)
+            f.flush()
+            good_path = f.name
+
+        try:
+            tools = load_tools_from_paths(["/tmp/does_not_exist_999.py", good_path])
+            assert len(tools) == 1
+            assert tools[0].tool_name == "test_echo"
+        finally:
+            os.unlink(good_path)
 
 
 # ---------------------------------------------------------------------------
