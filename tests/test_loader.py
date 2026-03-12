@@ -1,12 +1,14 @@
 """Tests for strands_tools_mcp.loader."""
 
+import http.server
 import os
 import tempfile
 import textwrap
+import threading
 
 import pytest
 
-from strands_tools_mcp.loader import load_tools_from_names, load_tools_from_paths
+from strands_tools_mcp.loader import _download_to_tempfile, _is_url, load_tools_from_names, load_tools_from_paths
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -148,3 +150,138 @@ class TestLoadToolsFromPaths:
             assert names == {"tool_a", "tool_b"}
         finally:
             os.unlink(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# URL helpers
+# ---------------------------------------------------------------------------
+
+
+class TestIsUrl:
+    """Tests for ``_is_url``."""
+
+    def test_https_url(self) -> None:
+        assert _is_url("https://raw.githubusercontent.com/user/repo/main/tool.py") is True
+
+    def test_http_url(self) -> None:
+        assert _is_url("http://example.com/tool.py") is True
+
+    def test_local_path(self) -> None:
+        assert _is_url("/home/user/tool.py") is False
+
+    def test_relative_path(self) -> None:
+        assert _is_url("./tools/my_tool.py") is False
+
+
+class TestDownloadToTempfile:
+    """Tests for ``_download_to_tempfile`` using a local HTTP server."""
+
+    def _start_server(self, content: str) -> tuple[http.server.HTTPServer, int]:
+        """Start a throwaway HTTP server serving *content* on any path."""
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(content.encode())
+
+            def log_message(self, *args):  # noqa: ARG002
+                pass  # silence logs
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, port
+
+    def test_downloads_file(self) -> None:
+        """A URL is downloaded to a local temp file."""
+        server, port = self._start_server(SAMPLE_DECORATED_TOOL)
+        try:
+            path = _download_to_tempfile(f"http://127.0.0.1:{port}/my_tool.py")
+            assert os.path.exists(path)
+            with open(path) as f:
+                assert "test_echo" in f.read()
+        finally:
+            server.shutdown()
+
+    def test_adds_py_extension(self) -> None:
+        """If the URL basename doesn't end in .py, .py is appended."""
+        server, port = self._start_server("x = 1\n")
+        try:
+            path = _download_to_tempfile(f"http://127.0.0.1:{port}/no_extension")
+            assert path.endswith(".py")
+        finally:
+            server.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# load_tools_from_paths — URL integration
+# ---------------------------------------------------------------------------
+
+
+class TestLoadToolsFromUrls:
+    """Tests for URL support in ``load_tools_from_paths``."""
+
+    def _start_server(self, content: str) -> tuple[http.server.HTTPServer, int]:
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(content.encode())
+
+            def log_message(self, *args):  # noqa: ARG002
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, port
+
+    def test_loads_tool_from_url(self) -> None:
+        """A tool .py served over HTTP is loaded correctly."""
+        server, port = self._start_server(SAMPLE_DECORATED_TOOL)
+        try:
+            tools = load_tools_from_paths([f"http://127.0.0.1:{port}/my_tool.py"])
+            assert len(tools) == 1
+            assert tools[0].tool_name == "test_echo"
+        finally:
+            server.shutdown()
+
+    def test_mixed_paths_and_urls(self) -> None:
+        """Local paths and URLs can be mixed in the same list."""
+        # Local file
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, dir=tempfile.gettempdir()) as f:
+            f.write(
+                textwrap.dedent("""\
+                from strands import tool
+
+                @tool
+                def local_tool(x: str) -> str:
+                    \"\"\"Local.
+
+                    Args:
+                        x: Input
+
+                    Returns:
+                        Output
+                    \"\"\"
+                    return x
+            """)
+            )
+            f.flush()
+            local_path = f.name
+
+        # URL
+        server, port = self._start_server(SAMPLE_DECORATED_TOOL)
+        try:
+            tools = load_tools_from_paths([local_path, f"http://127.0.0.1:{port}/remote_tool.py"])
+            names = {t.tool_name for t in tools}
+            assert "local_tool" in names
+            assert "test_echo" in names
+        finally:
+            server.shutdown()
+            os.unlink(local_path)

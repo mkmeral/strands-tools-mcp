@@ -25,7 +25,7 @@ Configure which tools to expose via environment variables:
 | Variable | Description | Example |
 |---|---|---|
 | `STRANDS_TOOLS` | Comma-separated tool names from the `strands-agents-tools` package | `shell,http_request,current_time,file_read` |
-| `STRANDS_TOOLS_PATHS` | Comma-separated file paths to custom `.py` tool files | `/path/to/my_tool.py,/path/to/another.py` |
+| `STRANDS_TOOLS_PATHS` | Comma-separated file paths **or URLs** to custom `.py` tool files | `/path/to/my_tool.py,https://raw.githubusercontent.com/user/repo/main/tool.py` |
 
 Both variables can be used together. At least one must be set.
 
@@ -71,6 +71,25 @@ You can combine built-in Strands tools with your own custom tool files:
   }
 }
 ```
+
+### With Remote Tools (URLs)
+
+Point directly at raw GitHub links, gists, or any hosted `.py` file:
+
+```json
+{
+  "mcpServers": {
+    "remote-tools": {
+      "command": "strands-tools-mcp",
+      "env": {
+        "STRANDS_TOOLS_PATHS": "https://raw.githubusercontent.com/user/repo/main/my_tool.py"
+      }
+    }
+  }
+}
+```
+
+Local paths and URLs can be mixed in `STRANDS_TOOLS_PATHS`.
 
 Custom tool files should use the `@tool` decorator from `strands`:
 
