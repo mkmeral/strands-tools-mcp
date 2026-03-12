@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "strands-tools-mcp"
 version = "0.1.0"
-description = "Expose Strands Agents tools as an MCP server via FastMCP"
+description = "Expose Strands Agents tools as an MCP server via stdio transport"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [
     { name = "mkmeral" },
 ]
-keywords = ["strands", "agents", "mcp", "tools", "fastmcp"]
+keywords = ["strands", "agents", "mcp", "tools"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -26,7 +26,7 @@ classifiers = [
 dependencies = [
     "strands-agents>=1.0.0",
     "strands-agents-tools>=0.1.0",
-    "fastmcp>=2.0.0",
+    "mcp>=1.0.0",
 ]
 
 [project.optional-dependencies]

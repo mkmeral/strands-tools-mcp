@@ -1,6 +1,8 @@
 # strands-tools-mcp
 
-Expose [Strands Agents](https://github.com/strands-agents/sdk-python) tools as an MCP server using [FastMCP](https://github.com/jlowin/fastmcp), so any MCP client (Kiro, Claude Desktop, etc.) can use them.
+Expose [Strands Agents](https://github.com/strands-agents/sdk-python) tools as an MCP server via stdio transport, so any MCP client (Kiro, Claude Desktop, etc.) can use them.
+
+Supports both `@tool`-decorated functions and `TOOL_SPEC` module-based tools from the `strands-agents-tools` package, as well as custom tool files.
 
 ## Installation
 
@@ -87,6 +89,15 @@ def my_custom_tool(message: str) -> str:
     """
     return f"Processed: {message}"
 ```
+
+## How It Works
+
+The server uses the Strands SDK's built-in tool loader to discover tools, then exposes them via the MCP protocol's stdio transport using the raw `mcp` library (no FastMCP). Both tool patterns are supported:
+
+- **`@tool` decorated functions** (`DecoratedFunctionTool`) — e.g. `current_time`, `shell`, `calculator`
+- **`TOOL_SPEC` module-based tools** (`PythonAgentTool`) — e.g. `file_read`, `file_write`, `http_request`, `python_repl`
+
+All tools are invoked through the unified `AgentTool.stream()` interface, so both types work identically.
 
 ## Development
 

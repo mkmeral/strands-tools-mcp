@@ -1,128 +1,89 @@
-"""FastMCP server that exposes Strands Agents tools over MCP stdio transport.
+"""MCP server that exposes Strands Agents tools over the MCP stdio transport.
 
-Configuration is done through environment variables:
+Uses the raw ``mcp`` library directly (no FastMCP) so we can register tools
+with their existing JSON schemas and dispatch calls through the unified
+``AgentTool.stream()`` interface — which handles both ``@tool``-decorated
+functions and ``TOOL_SPEC`` module-based tools transparently.
 
-- ``STRANDS_TOOLS``: Comma-separated tool names from the ``strands-agents-tools``
-  package (e.g. ``"shell,http_request,current_time"``).
-- ``STRANDS_TOOLS_PATHS``: Comma-separated file paths to custom ``.py`` tool files
-  (e.g. ``"/path/to/my_tool.py,/path/to/another.py"``).
+Configuration is via environment variables:
 
-At least one of the two variables must be set.
+- ``STRANDS_TOOLS`` — comma-separated module names from the
+  ``strands-agents-tools`` package (e.g. ``"shell,file_read,current_time"``).
+- ``STRANDS_TOOLS_PATHS`` — comma-separated file paths to custom ``.py``
+  tool files.
+
+At least one must be set.
 """
 
+import asyncio
 import logging
 import os
-import re
 import sys
+import uuid
 from typing import Any
 
-from fastmcp import FastMCP
+import mcp.types as types
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from strands.types.tools import AgentTool
 
 from strands_tools_mcp.loader import load_tools_from_names, load_tools_from_paths
 
 logger = logging.getLogger(__name__)
 
-# Mapping from JSON Schema types to Python type names used in code generation.
-_JSON_TYPE_TO_PYTHON: dict[str, str] = {
-    "string": "str",
-    "integer": "int",
-    "number": "float",
-    "boolean": "bool",
-    "array": "list",
-    "object": "dict",
-}
 
-# Valid Python identifier pattern
-_VALID_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# ---------------------------------------------------------------------------
+# Tool invocation helper
+# ---------------------------------------------------------------------------
 
 
-def _build_handler(strands_tool: Any, schema: dict[str, Any]) -> Any:
-    """Dynamically build an async handler function with typed parameters.
+async def _call_strands_tool(tool: AgentTool, arguments: dict[str, Any]) -> str:
+    """Invoke a Strands ``AgentTool`` and return the result as text.
 
-    FastMCP requires tool functions to have explicit parameters (no ``**kwargs``).
-    This function reads the JSON Schema from the Strands tool and generates a
-    function whose signature matches the schema, then delegates to the original
-    Strands tool at runtime.
+    Both ``DecoratedFunctionTool`` and ``PythonAgentTool`` implement
+    ``AgentTool.stream()``.  The stream yields events; the last one
+    contains the ``ToolResult``.
 
     Args:
-        strands_tool: The Strands ``DecoratedFunctionTool`` to wrap.
-        schema: The ``inputSchema.json`` dict from the tool spec.
+        tool: The Strands tool to invoke.
+        arguments: The MCP call arguments (maps to ``tool_use["input"]``).
 
     Returns:
-        An async callable with explicit typed parameters.
+        A string representation of the tool's output.
     """
-    properties = schema.get("properties", {})
-    required = set(schema.get("required", []))
+    tool_use = {
+        "toolUseId": str(uuid.uuid4()),
+        "name": tool.tool_name,
+        "input": arguments,
+    }
 
-    # Build parameter strings – required params first, then optional.
-    params: list[str] = []
-    for pname in sorted(properties, key=lambda p: p not in required):
-        if not _VALID_IDENT.match(pname):
-            logger.warning("Skipping parameter '%s' – not a valid Python identifier", pname)
-            continue
-        ptype = _JSON_TYPE_TO_PYTHON.get(properties[pname].get("type", "string"), "str")
-        if pname in required:
-            params.append(f"{pname}: {ptype}")
-        else:
-            params.append(f"{pname}: {ptype} = None")
+    last_event: dict[str, Any] | None = None
+    async for event in tool.stream(tool_use, invocation_state={}):
+        # Events are ToolResultEvent / ToolStreamEvent dicts
+        last_event = event if isinstance(event, dict) else getattr(event, "__dict__", {"raw": str(event)})
 
-    param_str = ", ".join(params)
+    if last_event is None:
+        return ""
 
-    # Generate the handler function source.  ``_call`` is captured in the
-    # namespace so the generated code can invoke the Strands tool.
-    func_source = f"""\
-async def _handler({param_str}) -> str:
-    kwargs = {{k: v for k, v in locals().items() if v is not None}}
-    return _call(**kwargs)
-"""
-
-    def _call(**kwargs: Any) -> str:
-        result = strands_tool(**kwargs)
-        if isinstance(result, dict):
-            content = result.get("content", [])
-            texts = [c.get("text", str(c)) for c in content if isinstance(c, dict)]
-            return "\n".join(texts) if texts else str(result)
-        return str(result)
-
-    namespace: dict[str, Any] = {"_call": _call}
-    exec(func_source, namespace)  # noqa: S102
-    return namespace["_handler"]
+    # Extract the ToolResult from the event wrapper
+    result = last_event.get("tool_result", last_event)
+    content = result.get("content", [])
+    texts = [c.get("text", str(c)) for c in content if isinstance(c, dict)]
+    return "\n".join(texts) if texts else str(result)
 
 
-def register_tool(mcp: FastMCP, strands_tool: Any) -> None:
-    """Register a single Strands tool as an MCP tool on the server.
-
-    Creates a dynamically-typed async handler function from the tool's input
-    schema and registers it with FastMCP.
-
-    Args:
-        mcp: The FastMCP server instance.
-        strands_tool: A ``DecoratedFunctionTool`` from the Strands SDK.
-    """
-    spec = strands_tool.tool_spec
-    name = spec["name"]
-    description = spec.get("description", "")
-    schema = spec.get("inputSchema", {}).get("json", {})
-
-    handler = _build_handler(strands_tool, schema)
-    handler.__name__ = name
-    handler.__doc__ = description
-
-    mcp.tool(name=name, description=description)(handler)
+# ---------------------------------------------------------------------------
+# Server construction
+# ---------------------------------------------------------------------------
 
 
-def create_server() -> FastMCP:
-    """Create and configure the MCP server with tools from environment variables.
-
-    Reads ``STRANDS_TOOLS`` and ``STRANDS_TOOLS_PATHS``, loads the
-    corresponding Strands tools, wraps each one, and registers them on
-    a new ``FastMCP`` instance.
+def create_server() -> tuple[Server, list[AgentTool]]:
+    """Create an MCP ``Server`` and load tools from environment variables.
 
     Returns:
-        A configured ``FastMCP`` server ready to run.
+        A ``(server, tools)`` tuple.  The server has ``list_tools`` and
+        ``call_tool`` handlers registered.
     """
-    mcp = FastMCP("strands-tools-mcp")
-
     tool_names_env = os.environ.get("STRANDS_TOOLS", "")
     tool_paths_env = os.environ.get("STRANDS_TOOLS_PATHS", "")
 
@@ -130,7 +91,7 @@ def create_server() -> FastMCP:
         logger.error("No tools configured. Set STRANDS_TOOLS and/or STRANDS_TOOLS_PATHS environment variables.")
         sys.exit(1)
 
-    tools: list[Any] = []
+    tools: list[AgentTool] = []
 
     if tool_names_env:
         names = [n.strip() for n in tool_names_env.split(",") if n.strip()]
@@ -140,18 +101,57 @@ def create_server() -> FastMCP:
         paths = [p.strip() for p in tool_paths_env.split(",") if p.strip()]
         tools.extend(load_tools_from_paths(paths))
 
-    for strands_tool in tools:
-        register_tool(mcp, strands_tool)
+    # Build a name → tool lookup for call dispatching
+    tool_map: dict[str, AgentTool] = {t.tool_name: t for t in tools}
+
+    server = Server("strands-tools-mcp")
+
+    # ---- list_tools handler ----
+    @server.list_tools()
+    async def list_tools() -> list[types.Tool]:
+        mcp_tools: list[types.Tool] = []
+        for t in tools:
+            spec = t.tool_spec
+            mcp_tools.append(
+                types.Tool(
+                    name=spec["name"],
+                    description=spec.get("description", ""),
+                    inputSchema=spec.get("inputSchema", {}).get("json", {"type": "object", "properties": {}}),
+                )
+            )
+        return mcp_tools
+
+    # ---- call_tool handler ----
+    @server.call_tool()
+    async def call_tool(name: str, arguments: dict[str, Any] | None = None) -> list[types.TextContent]:
+        if name not in tool_map:
+            raise ValueError(f"Unknown tool: {name}")
+
+        result_text = await _call_strands_tool(tool_map[name], arguments or {})
+        return [types.TextContent(type="text", text=result_text)]
 
     logger.info("Registered %d tool(s) with MCP server", len(tools))
-    return mcp
+    return server, tools
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 
 def main() -> None:
     """Entry point for the ``strands-tools-mcp`` CLI command."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    server = create_server()
-    server.run(transport="stdio")
+
+    server, tools = create_server()
+    tool_names = [t.tool_name for t in tools]
+    logger.info("Starting MCP stdio server with tools: %s", tool_names)
+
+    async def run() -> None:
+        async with stdio_server() as (read_stream, write_stream):
+            await server.run(read_stream, write_stream, server.create_initialization_options())
+
+    asyncio.run(run())
 
 
 if __name__ == "__main__":

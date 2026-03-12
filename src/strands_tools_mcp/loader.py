@@ -1,89 +1,65 @@
 """Tool loading logic for strands-tools-mcp.
 
-Loads Strands Agents tools from package names (strands-agents-tools) and from
-custom file paths, returning DecoratedFunctionTool instances.
+Uses the Strands SDK's built-in loader to resolve tool strings into ``AgentTool``
+instances, handling both ``@tool``-decorated functions (``DecoratedFunctionTool``)
+and ``TOOL_SPEC`` module-based tools (``PythonAgentTool``) transparently.
 """
 
-import importlib
-import importlib.util
 import logging
-import os
-import sys
-from typing import Any
+
+from strands.tools.loader import load_tools_from_file_path, load_tools_from_module_path
+from strands.types.tools import AgentTool
 
 logger = logging.getLogger(__name__)
 
 
-def load_tools_from_names(names: list[str]) -> list[Any]:
-    """Load Strands tools by name from the strands-agents-tools package.
+def load_tools_from_names(names: list[str]) -> list[AgentTool]:
+    """Load Strands tools by module name from the ``strands-agents-tools`` package.
 
-    Each name corresponds to a module under ``strands_tools``. For example,
-    the name ``"current_time"`` imports ``strands_tools.current_time`` and
-    discovers any ``DecoratedFunctionTool`` instances defined in the module.
+    Each *name* is resolved as ``strands_tools.<name>`` through the SDK's
+    ``load_tools_from_module_path``, which discovers both ``@tool``-decorated
+    functions and ``TOOL_SPEC`` module-based tools.
 
     Args:
-        names: Tool module names to import (e.g. ``["current_time", "shell"]``).
+        names: Tool module names (e.g. ``["current_time", "file_read"]``).
 
     Returns:
-        A list of ``DecoratedFunctionTool`` instances found in the modules.
+        A list of :class:`AgentTool` instances.
 
     Raises:
-        ImportError: If a module cannot be imported.
+        AttributeError: If a module is not a valid tool module.
+        ImportError: If a module cannot be found.
     """
-    from strands.tools.decorator import DecoratedFunctionTool
-
-    tools: list[Any] = []
+    tools: list[AgentTool] = []
     for name in names:
-        try:
-            module = importlib.import_module(f"strands_tools.{name}")
-            for attr_name in dir(module):
-                attr = getattr(module, attr_name)
-                if isinstance(attr, DecoratedFunctionTool):
-                    tools.append(attr)
-                    logger.info("Loaded tool '%s' from strands_tools.%s", attr.tool_name, name)
-        except ImportError as e:
-            logger.error("Failed to import strands_tools.%s: %s", name, e)
-            raise
+        module_path = f"strands_tools.{name}"
+        loaded = load_tools_from_module_path(module_path)
+        for t in loaded:
+            logger.info("Loaded tool '%s' from %s (%s)", t.tool_name, module_path, type(t).__name__)
+        tools.extend(loaded)
     return tools
 
 
-def load_tools_from_paths(paths: list[str]) -> list[Any]:
+def load_tools_from_paths(paths: list[str]) -> list[AgentTool]:
     """Load Strands tools from Python file paths.
 
-    Each path should point to a ``.py`` file containing one or more functions
-    decorated with ``@tool`` from the ``strands`` package.
+    Uses the SDK's ``load_tools_from_file_path`` which handles both
+    ``@tool``-decorated and ``TOOL_SPEC`` module-based tools.
 
     Args:
-        paths: File paths to tool Python files.
+        paths: File paths to ``.py`` tool files.
 
     Returns:
-        A list of ``DecoratedFunctionTool`` instances found in the files.
+        A list of :class:`AgentTool` instances.
 
     Raises:
-        FileNotFoundError: If a file path does not exist.
-        ImportError: If a module cannot be loaded from a file.
+        FileNotFoundError: If a file does not exist.
+        ImportError: If a module cannot be loaded.
     """
-    from strands.tools.decorator import DecoratedFunctionTool
-
-    tools: list[Any] = []
+    tools: list[AgentTool] = []
     for filepath in paths:
-        filepath = os.path.expanduser(filepath)
-        if not os.path.exists(filepath):
-            raise FileNotFoundError(f"Tool file not found: {filepath}")
-
-        module_name = os.path.basename(filepath).split(".")[0]
-        spec = importlib.util.spec_from_file_location(module_name, os.path.abspath(filepath))
-        if not spec or not spec.loader:
-            raise ImportError(f"Could not load module from {filepath}")
-
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-        spec.loader.exec_module(module)
-
-        for attr_name in dir(module):
-            attr = getattr(module, attr_name)
-            if isinstance(attr, DecoratedFunctionTool):
-                tools.append(attr)
-                logger.info("Loaded tool '%s' from %s", attr.tool_name, filepath)
-
+        loaded = load_tools_from_file_path(filepath)
+        for t in loaded:
+            logger.info("Loaded tool '%s' from %s (%s)", t.tool_name, filepath, type(t).__name__)
+        tools.extend(loaded)
     return tools

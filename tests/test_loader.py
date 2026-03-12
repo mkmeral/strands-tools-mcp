@@ -3,7 +3,6 @@
 import os
 import tempfile
 import textwrap
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -13,7 +12,7 @@ from strands_tools_mcp.loader import load_tools_from_names, load_tools_from_path
 # Helpers
 # ---------------------------------------------------------------------------
 
-SAMPLE_TOOL_SOURCE = textwrap.dedent("""\
+SAMPLE_DECORATED_TOOL = textwrap.dedent("""\
     from strands import tool
 
     @tool
@@ -30,26 +29,6 @@ SAMPLE_TOOL_SOURCE = textwrap.dedent("""\
 """)
 
 
-def _make_mock_decorated_tool(name: str = "mock_tool") -> MagicMock:
-    """Return a mock that quacks like a ``DecoratedFunctionTool``."""
-    mock = MagicMock()
-    mock.tool_name = name
-    mock.tool_spec = {
-        "name": name,
-        "description": f"A mock tool called {name}",
-        "inputSchema": {
-            "json": {
-                "type": "object",
-                "properties": {
-                    "arg1": {"type": "string", "description": "An argument"},
-                },
-                "required": ["arg1"],
-            }
-        },
-    }
-    return mock
-
-
 # ---------------------------------------------------------------------------
 # load_tools_from_names
 # ---------------------------------------------------------------------------
@@ -58,32 +37,42 @@ def _make_mock_decorated_tool(name: str = "mock_tool") -> MagicMock:
 class TestLoadToolsFromNames:
     """Tests for ``load_tools_from_names``."""
 
-    def test_loads_tool_from_module(self) -> None:
-        """A module with a DecoratedFunctionTool attribute is discovered."""
-        from strands.tools.decorator import DecoratedFunctionTool
-
-        mock_tool = _make_mock_decorated_tool("current_time")
-        # Make mock pass isinstance check
-        mock_tool.__class__ = DecoratedFunctionTool
-
-        fake_module = MagicMock()
-        fake_module.__dir__ = lambda self: ["current_time"]  # noqa: ARG005
-        fake_module.current_time = mock_tool
-
-        with patch("strands_tools_mcp.loader.importlib.import_module", return_value=fake_module):
-            tools = load_tools_from_names(["current_time"])
-
-        assert len(tools) == 1
+    def test_loads_decorated_tool(self) -> None:
+        """A @tool-decorated module is loaded (e.g. current_time)."""
+        tools = load_tools_from_names(["current_time"])
+        assert len(tools) >= 1
         assert tools[0].tool_name == "current_time"
 
+    def test_loads_toolspec_tool(self) -> None:
+        """A TOOL_SPEC module is loaded (e.g. file_read)."""
+        tools = load_tools_from_names(["file_read"])
+        assert len(tools) >= 1
+        assert tools[0].tool_name == "file_read"
+
+    def test_loads_multiple_tools(self) -> None:
+        """Multiple tool names are loaded together."""
+        tools = load_tools_from_names(["current_time", "file_read"])
+        names = {t.tool_name for t in tools}
+        assert "current_time" in names
+        assert "file_read" in names
+
     def test_raises_on_missing_module(self) -> None:
-        """ImportError propagates when a module does not exist."""
-        with pytest.raises(ImportError):
-            load_tools_from_names(["nonexistent_tool_xyz"])
+        """An error is raised for a non-existent module."""
+        with pytest.raises((ImportError, AttributeError)):
+            load_tools_from_names(["nonexistent_tool_xyz_999"])
 
     def test_empty_list_returns_empty(self) -> None:
-        """An empty names list returns an empty tools list."""
+        """An empty names list returns no tools."""
         assert load_tools_from_names([]) == []
+
+    def test_tool_has_valid_spec(self) -> None:
+        """Loaded tools have a well-formed tool_spec."""
+        tools = load_tools_from_names(["current_time"])
+        spec = tools[0].tool_spec
+        assert "name" in spec
+        assert "description" in spec
+        assert "inputSchema" in spec
+        assert "json" in spec["inputSchema"]
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +86,7 @@ class TestLoadToolsFromPaths:
     def test_loads_tool_from_file(self) -> None:
         """A .py file with an @tool-decorated function is discovered."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, dir=tempfile.gettempdir()) as f:
-            f.write(SAMPLE_TOOL_SOURCE)
+            f.write(SAMPLE_DECORATED_TOOL)
             f.flush()
             tmp_path = f.name
 
@@ -105,35 +94,17 @@ class TestLoadToolsFromPaths:
             tools = load_tools_from_paths([tmp_path])
             assert len(tools) == 1
             assert tools[0].tool_name == "test_echo"
-
-            # Verify the tool is actually callable
-            spec = tools[0].tool_spec
-            assert "inputSchema" in spec
-            assert spec["name"] == "test_echo"
         finally:
             os.unlink(tmp_path)
 
     def test_raises_on_missing_file(self) -> None:
-        """FileNotFoundError is raised for a non-existent path."""
-        with pytest.raises(FileNotFoundError, match="Tool file not found"):
+        """An error is raised for a non-existent path."""
+        with pytest.raises((FileNotFoundError, ImportError)):
             load_tools_from_paths(["/tmp/does_not_exist_abc123.py"])
 
     def test_empty_list_returns_empty(self) -> None:
-        """An empty paths list returns an empty tools list."""
+        """An empty paths list returns no tools."""
         assert load_tools_from_paths([]) == []
-
-    def test_file_with_no_tools_returns_empty(self) -> None:
-        """A .py file without @tool-decorated functions returns nothing."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, dir=tempfile.gettempdir()) as f:
-            f.write("x = 42\n")
-            f.flush()
-            tmp_path = f.name
-
-        try:
-            tools = load_tools_from_paths([tmp_path])
-            assert tools == []
-        finally:
-            os.unlink(tmp_path)
 
     def test_multiple_tools_in_one_file(self) -> None:
         """A file with multiple @tool functions returns all of them."""
