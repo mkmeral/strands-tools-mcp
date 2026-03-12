@@ -149,6 +149,11 @@ def main() -> None:
     """Entry point for the ``strands-tools-mcp`` CLI command."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
+    # Strands tools like shell and python_repl check BYPASS_TOOL_CONSENT and
+    # will block waiting for interactive confirmation if it's not set.  In an
+    # MCP server there's nobody at the terminal to approve, so default to true.
+    os.environ.setdefault("BYPASS_TOOL_CONSENT", "true")
+
     server, tools = create_server()
     tool_names = [t.tool_name for t in tools]
     logger.info("Starting MCP stdio server with tools: %s", tool_names)
