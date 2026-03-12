@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "strands-tools-mcp"
+version = "0.1.0"
+description = "Expose Strands Agents tools as an MCP server via FastMCP"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [
+    { name = "mkmeral" },
+]
+keywords = ["strands", "agents", "mcp", "tools", "fastmcp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "strands-agents>=1.0.0",
+    "strands-agents-tools>=0.1.0",
+    "fastmcp>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]
+
+[project.scripts]
+strands-tools-mcp = "strands_tools_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/strands_tools_mcp"]
+
+[tool.hatch.envs.default]
+features = ["dev"]
+
+[tool.hatch.envs.test]
+features = ["dev"]
+
+[tool.hatch.envs.test.scripts]
+run = "pytest tests/ -v {args}"
+run-cov = "pytest tests/ -v --cov=strands_tools_mcp {args}"
+
+[tool.hatch.envs.lint]
+features = ["dev"]
+
+[tool.hatch.envs.lint.scripts]
+check = "ruff check src/ tests/"
+format = "ruff format src/ tests/"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
